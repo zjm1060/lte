@@ -21,12 +21,13 @@ static void usage(char *self)
 {
 	fprintf(stderr, "%s [options]\n", basename(self));
 	fprintf(stderr, "options:\n", basename(self));
-	fprintf(stderr, "\t--device dev\tSpecify the port used for dialing, default is /dev/ttyS0\n");
+	fprintf(stderr, "\t--device dev\tSpecify the port used for dialing\n\t\t\tdefault is /dev/ttyS0\n");
 	fprintf(stderr, "\t--buad buad\tSpecify the port baud rate, default is 115200\n");
-	fprintf(stderr, "\t--apn apn\tSpecify the APN, default is cmnet\n");
-	fprintf(stderr, "\t--user apn\tSpecify the user\n");
-	fprintf(stderr, "\t--passwd apn\tSpecify the password\n");
-	fprintf(stderr, "\t--power-ctrl\tSet power control pin, if not set than will not control the lte module power\n");
+	fprintf(stderr, "\t--apn xxx\tSpecify the APN, default is cmnet\n");
+	fprintf(stderr, "\t--user xxx\tSpecify the user\n");
+	fprintf(stderr, "\t--passwd xxx\tSpecify the password\n");
+	fprintf(stderr, "\t--power-ctrl n\tSet power control pin\n\t\t\tif not set than will not control the lte module power\n");
+	fprintf(stderr, "\t--unit n\tSets the ppp unit number for outbound connections\n\t\t\tdefault is 0\n");
 	fprintf(stderr, "\t--no-daemon\tForeground execution\n");
 	fprintf(stderr, "\t--help\tShow this message\n");
 }
@@ -366,6 +367,7 @@ int main(int argc, char *argv[])
 	const char *passwd = "";
 	int buad = B115200;
 	char *buad_str = "115200";
+	int ins = 0;
 	int force_route = 0;
 
 	int lte_fd = 0;
@@ -396,6 +398,21 @@ int main(int argc, char *argv[])
 			i++;
 			apn = argv[i];
 		}
+		else if (!strcmp(argv[i], "--user"))
+		{
+			i++;
+			user = argv[i];
+		}
+		else if (!strcmp(argv[i], "--passwd"))
+		{
+			i++;
+			passwd = argv[i];
+		}
+		else if (!strcmp(argv[i], "--unit"))
+		{
+			i++;
+			ins = atoi(argv[i]);
+		}
 		else if (!strcmp(argv[i], "--buad"))
 		{
 			i ++;
@@ -417,7 +434,7 @@ int main(int argc, char *argv[])
 		if (wait_module_ready(device, buad, apn, 50 * 1000) == 0)
 			goto again;
 
-		start_ppp(device, buad_str, 0, apn, user, passwd, force_route);
+		start_ppp(device, buad_str, ins, apn, user, passwd, force_route);
 
 	again:
 		power_off(power_pin);
