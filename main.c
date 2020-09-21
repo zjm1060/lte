@@ -13,6 +13,9 @@
 #include <libgen.h>
 #include <errno.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <net/if.h>
 
 static void usage(char *self)
 {
@@ -23,7 +26,6 @@ static void usage(char *self)
 	fprintf(stderr, "\t--apn apn\tSpecify the APN, default is cmnet\n");
 	fprintf(stderr, "\t--user apn\tSpecify the user\n");
 	fprintf(stderr, "\t--passwd apn\tSpecify the password\n");
-	fprintf(stderr, "\t--force-default-route\tSet the connection as the default route, whether it exists or not\n");
 	fprintf(stderr, "\t--power-ctrl\tSet power control pin, if not set than will not control the lte module power\n");
 	fprintf(stderr, "\t--no-daemon\tForeground execution\n");
 	fprintf(stderr, "\t--help\tShow this message\n");
@@ -35,8 +37,8 @@ static void power(int pin, int stat)
 	if (!pin)
 		return;
 
-	snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d", pin);
-	if (!access(path, 0))
+	snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
+	if (access(path, 0))
 	{
 		snprintf(path, sizeof(path), "echo %d > /sys/class/gpio/export", pin);
 		system(path);
@@ -65,7 +67,7 @@ int open_device(const char *device, int buad)
 {
 	struct termios newtio;
 	int fd = open(device, O_RDWR);
-	if (fd != -1)
+	if (fd == -1)
 	{
 		return -1;
 	}
@@ -140,6 +142,7 @@ int device_read(int fd, void *b, size_t len, int timeout_ms)
 
 int atCommand(int fd, const char *cmd, char *response, int size, int wait)
 {
+//	fprintf(stderr, "send:%s\n", cmd);
 	write(fd, cmd, strlen(cmd));
 	if (device_read(fd, response, size, wait))
 	{
@@ -163,8 +166,8 @@ int wait_module_ready(const char *device, int buad, const char *apn, int wait)
 {
 #define chk_time(wait)      \
 	{                       \
-		usleep(100 * 1000); \
-		wait -= 100;        \
+		usleep(2000 * 1000); \
+		wait -= 2000;        \
 		if (wait <= 0)      \
 			goto out;       \
 	}
@@ -176,7 +179,7 @@ int wait_module_ready(const char *device, int buad, const char *apn, int wait)
 		chk_time(wait);
 	}
 
-	if (fd = open_device(device, buad) == -1)
+	if ((fd = open_device(device, buad)) == -1)
 	{
 		return 0;
 	}
@@ -192,6 +195,7 @@ int wait_module_ready(const char *device, int buad, const char *apn, int wait)
 	{
 		if (!atCommand(fd, "AT+CREG?\r", buffer, 32, 100))
 		{ // wait module regist
+//			printf("%s\n",buffer);
 			if (strstr(buffer, "+CREG: 0,0") != NULL)
 			{
 				//Not registered
@@ -209,6 +213,7 @@ int wait_module_ready(const char *device, int buad, const char *apn, int wait)
 				break;
 			}
 		}
+
 		chk_time(wait);
 	}
 
@@ -219,12 +224,62 @@ out:
 	return res;
 }
 
-void start_ppp(const char *device, const char *buad, const char *user, const char *passwd, int force_route)
+static int child_runing = 0;
+void signal_hander(int sig)
+{
+	int status;
+	pid_t pid;
+
+//	printf("sig:%d\n",sig);
+	if ((pid = waitpid(0, &status, WNOHANG)) > 0) {
+//    while ((pid = waitpid(0, &status, WNOHANG)) > 0) {
+		if (WIFEXITED(status))
+			printf("------------child %d exit %d\n", pid, WEXITSTATUS(status));
+		else if (WIFSIGNALED(status))
+			printf("child %d cancel signal %d\n", pid, WTERMSIG(status));
+
+		child_runing = 0;
+	}
+}
+
+char *getip(const char *name)
+{
+	struct ifreq temp;
+	struct sockaddr_in *myaddr;
+	static char ip_buf[64];
+	int fd = 0;
+	int ret = -1;
+	strcpy(temp.ifr_name, name);
+	if ((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+		return "0.0.0.0";
+	}
+	ret = ioctl(fd, SIOCGIFFLAGS, &temp);
+	if (ret < 0){
+		close(fd);
+		return "0.0.0.0";
+	}
+	if(temp.ifr_flags & IFF_UP){
+		ret = ioctl(fd, SIOCGIFADDR, &temp);
+		close(fd);
+		if (ret < 0)
+			return "0.0.0.0";
+		myaddr = (struct sockaddr_in *) &(temp.ifr_addr);
+		strcpy(ip_buf, inet_ntoa(myaddr->sin_addr));
+		return ip_buf;
+	}
+
+	return "0.0.0.0";
+}
+
+void start_ppp(const char *device, const char *buad, int uint, const char *user, const char *passwd, int force_route)
 {
 	// pppd $device $buad noauth nodetach nocrtscts noipdefault usepeerdns defaultroute \
 	// user "$user" password "$passwd" connect "chat -v -E -f /etc/ppp/lte_connect.script"
-
+	char unit[2];
 	const char *argv[20];
+
+	unit[0] = '0'+uint;
+	unit[1] = 0;
 
 	argv[0] = "pppd";
 	argv[1] = device;
@@ -241,7 +296,14 @@ void start_ppp(const char *device, const char *buad, const char *user, const cha
 	argv[12] = passwd;
 	argv[13] = "connect";
 	argv[14] = "chat -v -E -f /etc/ppp/ppp_connect.script";
-	argv[15] = NULL;
+	argv[15] = "unit";
+	argv[16] = unit;
+	argv[17] = NULL;
+
+	setenv("PPP_APN","cmnet",1);
+
+	signal(SIGCHLD,signal_hander);
+	child_runing = 1;
 
 	pid_t pid = fork();
 	if (pid == -1)
@@ -253,13 +315,46 @@ void start_ppp(const char *device, const char *buad, const char *user, const cha
 	{
 		execv("/usr/sbin/pppd", (char **)argv);
 	}
+	else
+	{
+		sleep(5);
 
-	// todo check pppd
-	waitpid(pid, NULL, 0);
+		while(child_runing){
+			char ifname[IFNAMSIZ];
+			sleep(3);
+			snprintf(ifname, sizeof(ifname), "ppp%d", uint);
+			char *ip =  getip(ifname);
+//			printf("ip:%s\n",ip);
+			if(!strcmp("0.0.0.0",ip)){
+				fprintf(stderr, "%s is down\n", ifname);
+				kill(pid, SIGTERM);
+			}
+		}
+
+		fprintf(stderr, "pppd is exit,restart it\n");
+		signal(SIGCHLD, SIG_IGN);
+	}
 }
 
 #define power_on(a) power(a, 1)
 #define power_off(a) power(a, 0)
+
+#define P(q,s) case q:s = B##q;break;
+#define i2b(b)	\
+	({\
+	int s=B1200;\
+	switch(b){\
+		P(1200,s)\
+		P(2400,s)\
+		P(4800,s)\
+		P(9600,s)\
+		P(19200,s)\
+		P(38400,s)\
+		P(57600,s)\
+		P(115200,s)\
+		P(230400,s)\
+	}\
+	s;})
 
 int main(int argc, char *argv[])
 {
@@ -270,24 +365,40 @@ int main(int argc, char *argv[])
 	const char *user = "";
 	const char *passwd = "";
 	int buad = B115200;
+	char *buad_str = "115200";
 	int force_route = 0;
 
 	int lte_fd = 0;
 
-	for (int i = 0; i < argc; ++i)
+	for (int i = 1; i < argc; ++i)
 	{
 		if (!strcmp(argv[i], "--no-daemon"))
 		{
 			do_daemon = 0;
+		}
+		else if (!strcmp(argv[i], "--help"))
+		{
+			usage(argv[0]);
+			exit(0);
 		}
 		else if (!strcmp(argv[i], "--power-ctrl"))
 		{
 			i++;
 			power_pin = atoi(argv[i]);
 		}
+		else if (!strcmp(argv[i], "--device"))
+		{
+			i++;
+			device = argv[i];
+		}
+		else if (!strcmp(argv[i], "--buad"))
+		{
+			i ++;
+			int b = atoi(argv[i]);
+			buad_str = argv[i];
+			buad = i2b(b);
+		}
 	}
-
-	usage(argv[0]);
 
 	if (do_daemon && daemon(0, 0) == -1)
 	{
@@ -298,10 +409,10 @@ int main(int argc, char *argv[])
 	{
 		power_on(power_pin);
 
-		if (wait_module_ready(device, buad, apn, 30 * 1000) == 0)
+		if (wait_module_ready(device, buad, apn, 50 * 1000) == 0)
 			goto again;
 
-		start_ppp(device, "115200", user, passwd, force_route);
+		start_ppp(device, buad_str, 0, user, passwd, force_route);
 
 	again:
 		power_off(power_pin);

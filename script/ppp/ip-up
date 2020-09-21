@@ -15,6 +15,7 @@
 #
 case "$1" in
         ppp0)
+        		logger "add ppp0 to default route"
                 /sbin/route del default
                 /sbin/route add default dev ppp0
                 ;;
