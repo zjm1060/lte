@@ -1,5 +1,5 @@
-
 #!/bin/sh
+
 #
 # Script which handles the routing issues as necessary for pppd
 # Only the link to Newman requires this handling.
@@ -13,6 +13,7 @@
 #       $5      the remote IP address
 #       $6      the parameter specified by the 'ipparam' option to pppd
 #
+
 case "$1" in
         ppp0)
         		logger "add ppp0 to default route"
@@ -21,4 +22,4 @@ case "$1" in
                 ;;
         *)
 esac
-exit 0
+

@@ -271,7 +271,7 @@ char *getip(const char *name)
 	return "0.0.0.0";
 }
 
-void start_ppp(const char *device, const char *buad, int uint, const char *user, const char *passwd, int force_route)
+void start_ppp(const char *device, const char *buad, int uint, const char *apn, const char *user, const char *passwd, int force_route)
 {
 	// pppd $device $buad noauth nodetach nocrtscts noipdefault usepeerdns defaultroute \
 	// user "$user" password "$passwd" connect "chat -v -E -f /etc/ppp/lte_connect.script"
@@ -300,7 +300,7 @@ void start_ppp(const char *device, const char *buad, int uint, const char *user,
 	argv[16] = unit;
 	argv[17] = NULL;
 
-	setenv("PPP_APN","cmnet",1);
+	setenv("PPP_APN",apn,1);
 
 	signal(SIGCHLD,signal_hander);
 	child_runing = 1;
@@ -391,6 +391,11 @@ int main(int argc, char *argv[])
 			i++;
 			device = argv[i];
 		}
+		else if (!strcmp(argv[i], "--apn"))
+		{
+			i++;
+			apn = argv[i];
+		}
 		else if (!strcmp(argv[i], "--buad"))
 		{
 			i ++;
@@ -412,7 +417,7 @@ int main(int argc, char *argv[])
 		if (wait_module_ready(device, buad, apn, 50 * 1000) == 0)
 			goto again;
 
-		start_ppp(device, buad_str, 0, user, passwd, force_route);
+		start_ppp(device, buad_str, 0, apn, user, passwd, force_route);
 
 	again:
 		power_off(power_pin);
