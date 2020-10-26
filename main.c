@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include <syslog.h>
 
 static void usage(char *self)
 {
@@ -144,6 +145,7 @@ int device_read(int fd, void *b, size_t len, int timeout_ms)
 int atCommand(int fd, const char *cmd, char *response, int size, int wait)
 {
 //	fprintf(stderr, "send:%s\n", cmd);
+	memset(response, 0, size);
 	write(fd, cmd, strlen(cmd));
 	if (device_read(fd, response, size, wait))
 	{
@@ -163,7 +165,7 @@ int atCommand(int fd, const char *cmd, char *response, int size, int wait)
 	return -1;
 }
 
-int wait_module_ready(const char *device, int buad, const char *apn, int wait)
+int wait_module_ready(int ins, const char *device, int buad, const char *apn, int wait)
 {
 #define chk_time(wait)      \
 	{                       \
@@ -174,7 +176,10 @@ int wait_module_ready(const char *device, int buad, const char *apn, int wait)
 	}
 	int fd = 0;
 	int res = 0;
-	char buffer[32];
+	char buffer[128];
+	snprintf(buffer, sizeof(buffer), "/tmp/LTE%d.info", ins);
+	FILE *fp = fopen(buffer,"w+");
+
 	while (access(device, 0))
 	{ // wait module ready
 		chk_time(wait);
@@ -185,12 +190,78 @@ int wait_module_ready(const char *device, int buad, const char *apn, int wait)
 		return 0;
 	}
 
-	while (atCommand(fd, "AT\r", buffer, 32, 100))
+	while (atCommand(fd, "AT\r", buffer, 128, 100))
 	{
 		chk_time(wait);
 	}
 
-	atCommand(fd, "ATE0\r", buffer, 32, 100);
+	atCommand(fd, "ATE0\r", buffer, 128, 100);
+
+	while(1)
+	{
+		atCommand(fd, "AT+CPIN?\r", buffer, 128, 100);
+		if (strstr(buffer, "READY") != NULL){
+			syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"CPIN READY\n");
+			break;
+		}
+
+		chk_time(wait);
+	}
+
+	while(1){
+		if(!atCommand(fd, "AT+CGSN\r", buffer, 128, 100)){
+			char cgsn[32];
+
+			memset(cgsn, 0, sizeof(cgsn));
+			sscanf(buffer, "%*[^0-9]%30s", cgsn);
+			if(cgsn[0] >= '0' && cgsn[0] <= '9' && strlen(cgsn) > 5){
+				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"IMEI:%s\n",cgsn);
+				fprintf(fp, "IMEI:%s\n",cgsn);
+				break;
+			}
+		}
+	}
+
+	while(1){
+		if(!atCommand(fd, "AT+CIMI\r", buffer, 128, 100)){
+			char cimi[32];
+
+			memset(cimi, 0, sizeof(cimi));
+			sscanf(buffer, "%*[^0-9]%30s", cimi);
+			if(cimi[0] >= '0' && cimi[0] <= '9' && strlen(cimi) > 5){
+				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"IMSI:%s\n",cimi);
+				fprintf(fp, "IMSI:%s\n",cimi);
+				break;
+			}
+		}
+	}
+
+	while(1){
+		if(!atCommand(fd, "AT+CCID\r", buffer, 128, 100)){
+			char ccid[32];
+
+			memset(ccid, 0, sizeof(ccid));
+			sscanf(buffer, "%*[^0-9]%30s", ccid);
+			if(ccid[0] >= '0' && ccid[0] <= '9' && strlen(ccid) > 5){
+				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"CCID:%s\n",ccid);
+				fprintf(fp, "CCID:%s\n",ccid);
+				break;
+			}
+		}
+	}
+
+	if(!atCommand(fd, "ATI\r", buffer, 128, 100)){
+		char version[32];
+
+		char *ver = strstr(buffer, "Revision:");
+		if(ver){
+			sscanf(ver, "Revision: %30s", version);
+			syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"version:%s\n",version);
+			fprintf(fp, "VER:%s\n",version);
+		}
+	}
+
+	fclose(fp);
 
 	while (1)
 	{
@@ -204,12 +275,14 @@ int wait_module_ready(const char *device, int buad, const char *apn, int wait)
 			else if (strstr(buffer, "+CREG: 0,1") != NULL)
 			{
 				//Registered (home network)
+				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"Registered (home network)\n");
 				res = 1;
 				break;
 			}
 			else if (strstr(buffer, "+CREG: 0,5") != NULL)
 			{
 				//Registered (roaming)
+				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"Registered (roaming)\n");
 				res = 1;
 				break;
 			}
@@ -327,12 +400,12 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 			char *ip =  getip(ifname);
 //			printf("ip:%s\n",ip);
 			if(!strcmp("0.0.0.0",ip)){
-				fprintf(stderr, "%s is down\n", ifname);
+				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "%s is down\n", ifname);
 				kill(pid, SIGTERM);
 			}
 		}
 
-		fprintf(stderr, "pppd is exit,restart it\n");
+		syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "pppd is exit,restart it\n");
 		signal(SIGCHLD, SIG_IGN);
 	}
 }
@@ -366,6 +439,7 @@ int main(int argc, char *argv[])
 	const char *user = "";
 	const char *passwd = "";
 	int buad = B115200;
+	int wait = 60*1000;
 	char *buad_str = "115200";
 	int ins = 0;
 	int force_route = 0;
@@ -420,23 +494,32 @@ int main(int argc, char *argv[])
 			buad_str = argv[i];
 			buad = i2b(b);
 		}
+		else if (!strcmp(argv[i], "--wait"))
+		{
+			i ++;
+			wait = atoi(argv[i]);
+			wait *= 1000;
+		}
 	}
+
+	syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "start\n");
 
 	if (do_daemon && daemon(0, 0) == -1)
 	{
-		fprintf(stderr, "into daemon failure\n");
+		syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "into daemon failure\n");
 	}
 
 	while (1)
 	{
 		power_on(power_pin);
 
-		if (wait_module_ready(device, buad, apn, 50 * 1000) == 0)
+		if (wait_module_ready(ins, device, buad, apn, wait) == 0)
 			goto again;
 
 		start_ppp(device, buad_str, ins, apn, user, passwd, force_route);
 
 	again:
+		syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"Restart...\n");
 		power_off(power_pin);
 
 		sleep(2);
