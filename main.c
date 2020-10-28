@@ -196,6 +196,8 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 	}
 
 	atCommand(fd, "ATE0\r", buffer, 128, 100);
+// AT+QCFG="nwscanmode",0,1
+//	atCommand(fd, "AT+QCFG=\"nwscanmode\",1,1\r", buffer, 128, 2000);
 
 	while(1)
 	{
@@ -332,6 +334,7 @@ char *getip(const char *name)
 		close(fd);
 		return "0.0.0.0";
 	}
+
 	if(temp.ifr_flags & IFF_UP){
 		ret = ioctl(fd, SIOCGIFADDR, &temp);
 		close(fd);
@@ -340,9 +343,24 @@ char *getip(const char *name)
 		myaddr = (struct sockaddr_in *) &(temp.ifr_addr);
 		strcpy(ip_buf, inet_ntoa(myaddr->sin_addr));
 		return ip_buf;
+	}else{
+		close(fd);
 	}
 
 	return "0.0.0.0";
+}
+
+int getStatus(const char *name)
+{
+	char file[256];
+
+	snprintf(file, sizeof(file), "/sys/class/net/%s/flags", name);
+
+	if(!access(file, 0)){
+
+	}
+
+	return 0;
 }
 
 void start_ppp(const char *device, const char *buad, int uint, const char *apn, const char *user, const char *passwd, int force_route)
@@ -363,16 +381,15 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 	argv[5] = "nocrtscts";
 	argv[6] = "noipdefault";
 	argv[7] = "usepeerdns";
-	argv[8] = "defaultroute";
-	argv[9] = "user";
-	argv[10] = user;
-	argv[11] = "password";
-	argv[12] = passwd;
-	argv[13] = "connect";
-	argv[14] = "chat -v -E -f /etc/ppp/ppp_connect.script";
-	argv[15] = "unit";
-	argv[16] = unit;
-	argv[17] = NULL;
+	argv[8] = "user";
+	argv[9] = user;
+	argv[10] = "password";
+	argv[11] = passwd;
+	argv[12] = "connect";
+	argv[13] = "chat -v -E -f /etc/ppp/ppp_connect.script";
+	argv[14] = "unit";
+	argv[15] = unit;
+	argv[16] = NULL;
 
 	setenv("PPP_APN",apn,1);
 
