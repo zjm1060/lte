@@ -1,7 +1,7 @@
 /*
  * main.c
  *
- *  Created on: 2020��9��18��
+ *  Created on: 2020.9.18
  *      Author: zjm09
  */
 #include <stdio.h>
@@ -30,6 +30,7 @@ static void usage(char *self)
 	fprintf(stderr, "\t--power-ctrl n\tSet power control pin\n\t\t\tif not set than will not control the lte module power\n");
 	fprintf(stderr, "\t--unit n\tSets the ppp unit number for outbound connections\n\t\t\tdefault is 0\n");
 	fprintf(stderr, "\t--no-daemon\tForeground execution\n");
+	fprintf(stderr, "\t--no-dns\tForeground execution\n");
 	fprintf(stderr, "\t--help\tShow this message\n");
 }
 
@@ -363,33 +364,38 @@ int getStatus(const char *name)
 	return 0;
 }
 
-void start_ppp(const char *device, const char *buad, int uint, const char *apn, const char *user, const char *passwd, int force_route)
+void start_ppp(const char *device, const char *buad, int uint, const char *apn, const char *user, const char *passwd, int use_dns)
 {
 	// pppd $device $buad noauth nodetach nocrtscts noipdefault usepeerdns defaultroute \
 	// user "$user" password "$passwd" connect "chat -v -E -f /etc/ppp/lte_connect.script"
 	char unit[2];
 	const char *argv[20];
+	const char **arg = &argv[0];
 
 	unit[0] = '0'+uint;
 	unit[1] = 0;
 
-	argv[0] = "pppd";
-	argv[1] = device;
-	argv[2] = buad;
-	argv[3] = "noauth";
-	argv[4] = "nodetach";
-	argv[5] = "nocrtscts";
-	argv[6] = "noipdefault";
-	argv[7] = "usepeerdns";
-	argv[8] = "user";
-	argv[9] = user;
-	argv[10] = "password";
-	argv[11] = passwd;
-	argv[12] = "connect";
-	argv[13] = "chat -v -E -f /etc/ppp/ppp_connect.script";
-	argv[14] = "unit";
-	argv[15] = unit;
-	argv[16] = NULL;
+	*arg++ = "pppd";
+	*arg++ = device;
+	*arg++ = buad;
+	*arg++ = "noauth";
+	*arg++ = "nodetach";
+	*arg++ = "nocrtscts";
+	*arg++ = "noipdefault";
+	if(use_dns)
+		*arg++ = "usepeerdns";
+	*arg++ = "user";
+	*arg++ = user;
+	*arg++ = "password";
+	*arg++ = passwd;
+	*arg++ = "connect";
+	*arg++ = "chat -v -E -f /etc/ppp/ppp_connect.script";
+	if(uint >= 0){
+		*arg++ = "unit";
+		*arg++ = unit;
+	}
+	*arg++ = "nodefaultroute";
+	*arg++ = NULL;
 
 	setenv("PPP_APN",apn,1);
 
@@ -451,15 +457,16 @@ int main(int argc, char *argv[])
 {
 	int do_daemon = 1;
 	int power_pin = 0;
-	const char *device = "/dev/ttyUSB2";
+	const char *device = "/dev/ttyUSB1";
 	const char *apn = "cmnet";
 	const char *user = "";
 	const char *passwd = "";
 	int buad = B115200;
-	int wait = 60*1000;
+	int wait = 120*1000;
+	int usepeerdns = 1;
 	char *buad_str = "115200";
 	int ins = 0;
-	int force_route = 0;
+//	int force_route = 0;
 
 	int lte_fd = 0;
 
@@ -473,6 +480,10 @@ int main(int argc, char *argv[])
 		{
 			usage(argv[0]);
 			exit(0);
+		}
+		else if (!strcmp(argv[i], "--no-dns"))
+		{
+			usepeerdns = 0;
 		}
 		else if (!strcmp(argv[i], "--power-ctrl"))
 		{
@@ -533,7 +544,7 @@ int main(int argc, char *argv[])
 		if (wait_module_ready(ins, device, buad, apn, wait) == 0)
 			goto again;
 
-		start_ppp(device, buad_str, ins, apn, user, passwd, force_route);
+		start_ppp(device, buad_str, ins, apn, user, passwd, usepeerdns);
 
 	again:
 		syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"Restart...\n");
