@@ -150,6 +150,7 @@ int atCommand(int fd, const char *cmd, char *response, int size, int wait)
 	write(fd, cmd, strlen(cmd));
 	if (device_read(fd, response, size, wait))
 	{
+//		fprintf(stderr, "recv:%s\n", response);
 		if (strstr(response, "OK") ||
 			strstr(response, "CONNECT") ||
 			strstr(response, "RING") ||
@@ -244,7 +245,7 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 			char ccid[32];
 
 			memset(ccid, 0, sizeof(ccid));
-			sscanf(buffer, "%*[^0-9]%30s", ccid);
+			sscanf(buffer, "%*[^0-9]%[^\"]", ccid);
 			if(ccid[0] >= '0' && ccid[0] <= '9' && strlen(ccid) > 5){
 				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"CCID:%s\n",ccid);
 				fprintf(fp, "CCID:%s\n",ccid);
@@ -264,7 +265,6 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 		}
 	}
 
-	fclose(fp);
 
 	while (1)
 	{
@@ -294,6 +294,22 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 		chk_time(wait);
 	}
 
+	while(1){
+		if(!atCommand(fd, "AT+COPS?\r", buffer, 128, 100)){
+			char cops[32];
+			char *ops;
+			memset(cops, 0, sizeof(cops));
+			ops = strstr(buffer, "+COPS:");
+			if(ops){
+				sscanf(ops, "+COPS:%*[^,],%*[^,],\"%[^\"]", cops);
+				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"COPS:%s\n",cops);
+				fprintf(fp, "COPS:%s\n",cops);
+			}
+			break;
+		}
+	}
+
+	fclose(fp);
 out:
 	if (fd)
 		close(fd);
