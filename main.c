@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <ctype.h>
 #include <termio.h>
 #include <libgen.h>
 #include <errno.h>
@@ -16,7 +17,13 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include <gpiod.h>
 #include <syslog.h>
+
+static int ipv6 = 0;
+static int use_gpiod = 0;
+static char gpio_chip[32];
+static uint32_t gpio_line;
 
 static void usage(char *self)
 {
@@ -27,11 +34,27 @@ static void usage(char *self)
 	fprintf(stderr, "\t--apn xxx\tSpecify the APN, default is cmnet\n");
 	fprintf(stderr, "\t--user xxx\tSpecify the user\n");
 	fprintf(stderr, "\t--passwd xxx\tSpecify the password\n");
+	fprintf(stderr, "\t--ipv6\tSupport IPv6\n");
 	fprintf(stderr, "\t--power-ctrl n\tSet power control pin\n\t\t\tif not set than will not control the lte module power\n");
 	fprintf(stderr, "\t--unit n\tSets the ppp unit number for outbound connections\n\t\t\tdefault is 0\n");
 	fprintf(stderr, "\t--no-daemon\tForeground execution\n");
 	fprintf(stderr, "\t--no-dns\tForeground execution\n");
 	fprintf(stderr, "\t--help\tShow this message\n");
+}
+
+int r_str_isnumber(const char *str)
+{
+	if (!str || (!isdigit(*str) && *str != '-')) {
+		return 0;
+	}
+
+	for (str++; *str; str++) {
+		if (!isdigit (*str)) {
+			return 0;
+		}
+	}
+
+	return 1;
 }
 
 static void power(int pin, int stat)
@@ -212,6 +235,8 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 		chk_time(wait);
 	}
 
+	fprintf(fp, "{\n");
+
 	while(1){
 		if(!atCommand(fd, "AT+CGSN\r", buffer, 128, 100)){
 			char cgsn[32];
@@ -220,10 +245,11 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 			sscanf(buffer, "%*[^0-9]%30s", cgsn);
 			if(cgsn[0] >= '0' && cgsn[0] <= '9' && strlen(cgsn) > 5){
 				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"IMEI:%s\n",cgsn);
-				fprintf(fp, "IMEI:%s\n",cgsn);
+				fprintf(fp, "\"IMEI\":\"%s\",\n",cgsn);
 				break;
 			}
 		}
+		chk_time(wait);
 	}
 
 	while(1){
@@ -234,10 +260,11 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 			sscanf(buffer, "%*[^0-9]%30s", cimi);
 			if(cimi[0] >= '0' && cimi[0] <= '9' && strlen(cimi) > 5){
 				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"IMSI:%s\n",cimi);
-				fprintf(fp, "IMSI:%s\n",cimi);
+				fprintf(fp, "\"IMSI\":\"%s\",\n",cimi);
 				break;
 			}
 		}
+		chk_time(wait);
 	}
 
 	while(1){
@@ -245,13 +272,14 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 			char ccid[32];
 
 			memset(ccid, 0, sizeof(ccid));
-			sscanf(buffer, "%*[^0-9]%[^\"]", ccid);
+			sscanf(buffer, "%*[^0-9]%[^\"\n\r]", ccid);
 			if(ccid[0] >= '0' && ccid[0] <= '9' && strlen(ccid) > 5){
 				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"CCID:%s\n",ccid);
-				fprintf(fp, "CCID:%s\n",ccid);
+				fprintf(fp, "\"CCID\":\"%s\",\n",ccid);
 				break;
 			}
 		}
+		chk_time(wait);
 	}
 
 	if(!atCommand(fd, "ATI\r", buffer, 128, 100)){
@@ -261,10 +289,14 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 		if(ver){
 			sscanf(ver, "Revision: %30s", version);
 			syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"version:%s\n",version);
-			fprintf(fp, "VER:%s\n",version);
+			fprintf(fp, "\"VER\":\"%s\"\n",version);
 		}
+		chk_time(wait);
 	}
 
+	fprintf(fp, "}\n");
+
+	fflush(fp);
 
 	while (1)
 	{
@@ -309,8 +341,8 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 		}
 	}
 
-	fclose(fp);
 out:
+	fclose(fp);
 	if (fd)
 		close(fd);
 
@@ -405,7 +437,9 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 	*arg++ = "password";
 	*arg++ = passwd;
 	*arg++ = "connect";
-	*arg++ = "chat -v -E -f /etc/ppp/ppp_connect.script";
+	*arg++ = "chat -v -E -f /etc/ppp/ppp.script";
+	if(ipv6)
+		*arg++ = "+ipv6";
 	if(uint >= 0){
 		*arg++ = "unit";
 		*arg++ = unit;
@@ -433,13 +467,19 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 		sleep(5);
 
 		while(child_runing){
-			char ifname[IFNAMSIZ];
-			sleep(3);
-			snprintf(ifname, sizeof(ifname), "ppp%d", uint);
-			char *ip =  getip(ifname);
+			char ifpath[1024];
+			int fd = 0;
+			sleep(5);
+			snprintf(ifpath, sizeof(ifpath), "/sys/class/net/ppp%d/carrier", uint);
+//			char *ip =  getip(ifname);
 //			printf("ip:%s\n",ip);
-			if(!strcmp("0.0.0.0",ip)){
-				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "%s is down\n", ifname);
+//			if(!strcmp("0.0.0.0",ip)){
+//				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "%s is down\n", ifname);
+//				kill(pid, SIGTERM);
+//			}
+
+			if(access(ifpath, F_OK | R_OK)){
+				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "ppp%d is down\n", uint);
 				kill(pid, SIGTERM);
 			}
 		}
@@ -449,8 +489,12 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 	}
 }
 
-#define power_on(a) power(a, 1)
-#define power_off(a) power(a, 0)
+#define power_on(a) (power_pin)?\
+			((use_gpiod)?gpiod_ctxless_set_value(gpio_chip, gpio_line, 1, 0, "lte_power", NULL, NULL):power(a, 1)):\
+			0
+#define power_off(a) (power_pin)?\
+			((use_gpiod)?gpiod_ctxless_set_value(gpio_chip, gpio_line, 0, 0, "lte_power", NULL, NULL):power(a, 0)):\
+			0
 
 #define P(q,s) case q:s = B##q;break;
 #define i2b(b)	\
@@ -504,7 +548,15 @@ int main(int argc, char *argv[])
 		else if (!strcmp(argv[i], "--power-ctrl"))
 		{
 			i++;
-			power_pin = atoi(argv[i]);
+			if(r_str_isnumber(argv[i])){
+				power_pin = atoi(argv[i]);
+			}else{
+				use_gpiod = 1;
+				power_pin = 1;
+				if(gpiod_ctxless_find_line(argv[i], gpio_chip, sizeof(gpio_chip), &gpio_line) < 0){
+
+				}
+			}
 		}
 		else if (!strcmp(argv[i], "--device"))
 		{
@@ -525,6 +577,9 @@ int main(int argc, char *argv[])
 		{
 			i++;
 			passwd = argv[i];
+		}
+		else if (!strcmp(argv[i], "--ipv6")){
+			ipv6 = 1;
 		}
 		else if (!strcmp(argv[i], "--unit"))
 		{

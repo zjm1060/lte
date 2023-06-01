@@ -2,7 +2,7 @@
 
 ProjName=$1
 
-cross_prefix=arm-linux-gnueabihf-
+cross_prefix=aarch64-none-linux-gnu-
 
 Path=$(cd "$(dirname "$0")"; pwd)
 
