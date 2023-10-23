@@ -235,7 +235,7 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 		chk_time(wait);
 	}
 
-	fprintf(fp, "{\n");
+//	fprintf(fp, "{\n");
 
 	while(1){
 		if(!atCommand(fd, "AT+CGSN\r", buffer, 128, 100)){
@@ -245,7 +245,7 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 			sscanf(buffer, "%*[^0-9]%30s", cgsn);
 			if(cgsn[0] >= '0' && cgsn[0] <= '9' && strlen(cgsn) > 5){
 				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"IMEI:%s\n",cgsn);
-				fprintf(fp, "\"IMEI\":\"%s\",\n",cgsn);
+				fprintf(fp, "IMEI:%s\n",cgsn);
 				break;
 			}
 		}
@@ -260,7 +260,7 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 			sscanf(buffer, "%*[^0-9]%30s", cimi);
 			if(cimi[0] >= '0' && cimi[0] <= '9' && strlen(cimi) > 5){
 				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"IMSI:%s\n",cimi);
-				fprintf(fp, "\"IMSI\":\"%s\",\n",cimi);
+				fprintf(fp, "IMSI:%s\n",cimi);
 				break;
 			}
 		}
@@ -275,7 +275,7 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 			sscanf(buffer, "%*[^0-9]%[^\"\n\r]", ccid);
 			if(ccid[0] >= '0' && ccid[0] <= '9' && strlen(ccid) > 5){
 				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"CCID:%s\n",ccid);
-				fprintf(fp, "\"CCID\":\"%s\",\n",ccid);
+				fprintf(fp, "CCID:%s\n",ccid);
 				break;
 			}
 		}
@@ -289,12 +289,12 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 		if(ver){
 			sscanf(ver, "Revision: %30s", version);
 			syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"version:%s\n",version);
-			fprintf(fp, "\"VER\":\"%s\"\n",version);
+			fprintf(fp, "VER:%s\n",version);
 		}
 		chk_time(wait);
 	}
 
-	fprintf(fp, "}\n");
+//	fprintf(fp, "}\n");
 
 	fflush(fp);
 
@@ -412,12 +412,28 @@ int getStatus(const char *name)
 	return 0;
 }
 
-void start_ppp(const char *device, const char *buad, int uint, const char *apn, const char *user, const char *passwd, int use_dns)
+
+#define power_on(a) (power_pin)?\
+			((use_gpiod)?gpiod_ctxless_set_value(gpio_chip, gpio_line, 1, 0, "lte_power", NULL, NULL):power(a, 1)):\
+			0
+#define power_off(a) (power_pin)?\
+			((use_gpiod)?gpiod_ctxless_set_value(gpio_chip, gpio_line, 0, 0, "lte_power", NULL, NULL):power(a, 0)):\
+			0
+
+
+static int termination;
+
+void TerminationHandle(int sig)
+{
+	termination = 1;
+}
+
+void start_ppp(const char *device, const char *buad, int uint, const char *apn, const char *user, const char *passwd, int use_dns, int power_pin)
 {
 	// pppd $device $buad noauth nodetach nocrtscts noipdefault usepeerdns defaultroute \
 	// user "$user" password "$passwd" connect "chat -v -E -f /etc/ppp/lte_connect.script"
 	char unit[2];
-	const char *argv[20];
+	const char *argv[64];
 	const char **arg = &argv[0];
 
 	unit[0] = '0'+uint;
@@ -438,8 +454,10 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 	*arg++ = passwd;
 	*arg++ = "connect";
 	*arg++ = "chat -v -E -f /etc/ppp/ppp.script";
-	if(ipv6)
+	if(ipv6){
 		*arg++ = "+ipv6";
+		*arg++ = "ipv6cp-use-ipaddr";
+	}
 	if(uint >= 0){
 		*arg++ = "unit";
 		*arg++ = unit;
@@ -448,6 +466,12 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 	*arg++ = NULL;
 
 	setenv("PPP_APN",apn,1);
+
+	termination = 0;
+
+	signal(SIGINT,  TerminationHandle);
+	signal(SIGKILL, TerminationHandle);
+	signal(SIGTERM, TerminationHandle);
 
 	signal(SIGCHLD,signal_hander);
 	child_runing = 1;
@@ -478,23 +502,37 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 //				kill(pid, SIGTERM);
 //			}
 
+			if(termination){
+				kill(pid, SIGTERM);
+			}
+
 			if(access(ifpath, F_OK | R_OK)){
 				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "ppp%d is down\n", uint);
 				kill(pid, SIGTERM);
+			}else{
+				fd = open(ifpath, O_RDONLY);
+				if(fd >= 0){
+					char state = 0;
+					read(fd, &state, 1);
+					close(fd);
+
+					if(state == 0){
+						syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "ppp%d is down\n", uint);
+						kill(pid, SIGTERM);
+					}
+				}
 			}
+		}
+
+		if(termination){
+			power_off(power_pin);
+			exit(0);
 		}
 
 		syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "pppd is exit,restart it\n");
 		signal(SIGCHLD, SIG_IGN);
 	}
 }
-
-#define power_on(a) (power_pin)?\
-			((use_gpiod)?gpiod_ctxless_set_value(gpio_chip, gpio_line, 1, 0, "lte_power", NULL, NULL):power(a, 1)):\
-			0
-#define power_off(a) (power_pin)?\
-			((use_gpiod)?gpiod_ctxless_set_value(gpio_chip, gpio_line, 0, 0, "lte_power", NULL, NULL):power(a, 0)):\
-			0
 
 #define P(q,s) case q:s = B##q;break;
 #define i2b(b)	\
@@ -615,7 +653,7 @@ int main(int argc, char *argv[])
 		if (wait_module_ready(ins, device, buad, apn, wait) == 0)
 			goto again;
 
-		start_ppp(device, buad_str, ins, apn, user, passwd, usepeerdns);
+		start_ppp(device, buad_str, ins, apn, user, passwd, usepeerdns, power_pin);
 
 	again:
 		syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"Restart...\n");
