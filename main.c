@@ -20,6 +20,8 @@
 #include <gpiod.h>
 #include <syslog.h>
 
+#include "ini.h"
+
 static int ipv6 = 0;
 static int use_gpiod = 0;
 static char gpio_chip[32];
@@ -413,10 +415,10 @@ int getStatus(const char *name)
 }
 
 
-#define power_on(a) (power_pin)?\
+#define power_on(a) (a)?\
 			((use_gpiod)?gpiod_ctxless_set_value(gpio_chip, gpio_line, 1, 0, "lte_power", NULL, NULL):power(a, 1)):\
 			0
-#define power_off(a) (power_pin)?\
+#define power_off(a) (a)?\
 			((use_gpiod)?gpiod_ctxless_set_value(gpio_chip, gpio_line, 0, 0, "lte_power", NULL, NULL):power(a, 0)):\
 			0
 
@@ -551,20 +553,73 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 	}\
 	s;})
 
+struct Config{
+	int run_as_daemon;
+	int power_pin;
+	const char *device;
+	const char *buad;
+	const char *apn;
+	const char *user;
+	const char *passwd;
+	int ins;
+}gConfig;
+
+#define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
+static int ini_parse_handle(void* user, const char* section, const char* name,
+        const char* value)
+{
+	struct Config *config = user;
+
+	if (MATCH("device", "name")) {
+		config->device = strdup(value);
+	}else if (MATCH("device", "buad")) {
+		config->buad = strdup(value);
+	}else if (MATCH("device", "power")) {
+		char *power_pin = strdup(value);
+		if(r_str_isnumber(power_pin)){
+			config->power_pin = atoi(power_pin);
+		}else{
+			use_gpiod = 1;
+			config->power_pin = 1;
+			if(gpiod_ctxless_find_line(power_pin, gpio_chip, sizeof(gpio_chip), &gpio_line) < 0){
+
+			}
+		}
+	}else if (MATCH("dial", "apn")) {
+		config->apn = strdup(value);
+	}else if (MATCH("dial", "user")) {
+		config->user = strdup(value);
+	}else if (MATCH("dial", "passwd")) {
+		config->passwd = strdup(value);
+	}
+
+	return 1;
+}
+
 int main(int argc, char *argv[])
 {
-	int do_daemon = 1;
-	int power_pin = 0;
-	const char *device = "/dev/ttyUSB1";
-	const char *apn = "cmnet";
-	const char *user = "";
-	const char *passwd = "";
-	int buad = B115200;
+//	int do_daemon = 1;
+//	int power_pin = 0;
+//	const char *device = "/dev/ttyUSB1";
+//	const char *apn = "cmnet";
+//	const char *user = "";
+//	const char *passwd = "";
+//	int buad = B115200;
 	int wait = 120*1000;
 	int usepeerdns = 1;
-	char *buad_str = "115200";
-	int ins = 0;
+//	char *buad_str = "115200";
+//	int ins = 0;
 //	int force_route = 0;
+
+	gConfig.apn = "cmnet";
+	gConfig.user = "";
+	gConfig.passwd = "";
+
+	gConfig.device = "/dev/ttyUSB1";
+	gConfig.buad = "115200";
+	gConfig.power_pin = 0;
+	gConfig.ins = 0;
+	gConfig.run_as_daemon = 1;
 
 	int lte_fd = 0;
 
@@ -572,7 +627,7 @@ int main(int argc, char *argv[])
 	{
 		if (!strcmp(argv[i], "--no-daemon"))
 		{
-			do_daemon = 0;
+			gConfig.run_as_daemon = 0;
 		}
 		else if (!strcmp(argv[i], "--help"))
 		{
@@ -587,10 +642,10 @@ int main(int argc, char *argv[])
 		{
 			i++;
 			if(r_str_isnumber(argv[i])){
-				power_pin = atoi(argv[i]);
+				gConfig.power_pin = atoi(argv[i]);
 			}else{
 				use_gpiod = 1;
-				power_pin = 1;
+				gConfig.power_pin = 1;
 				if(gpiod_ctxless_find_line(argv[i], gpio_chip, sizeof(gpio_chip), &gpio_line) < 0){
 
 				}
@@ -599,22 +654,22 @@ int main(int argc, char *argv[])
 		else if (!strcmp(argv[i], "--device"))
 		{
 			i++;
-			device = argv[i];
+			gConfig.device = argv[i];
 		}
 		else if (!strcmp(argv[i], "--apn"))
 		{
 			i++;
-			apn = argv[i];
+			gConfig.apn = argv[i];
 		}
 		else if (!strcmp(argv[i], "--user"))
 		{
 			i++;
-			user = argv[i];
+			gConfig.user = argv[i];
 		}
 		else if (!strcmp(argv[i], "--passwd"))
 		{
 			i++;
-			passwd = argv[i];
+			gConfig.passwd = argv[i];
 		}
 		else if (!strcmp(argv[i], "--ipv6")){
 			ipv6 = 1;
@@ -622,14 +677,14 @@ int main(int argc, char *argv[])
 		else if (!strcmp(argv[i], "--unit"))
 		{
 			i++;
-			ins = atoi(argv[i]);
+			gConfig.ins = atoi(argv[i]);
 		}
 		else if (!strcmp(argv[i], "--buad"))
 		{
 			i ++;
-			int b = atoi(argv[i]);
-			buad_str = argv[i];
-			buad = i2b(b);
+//			int b = atoi(argv[i]);
+			gConfig.buad = argv[i];
+//			buad = i2b(b);
 		}
 		else if (!strcmp(argv[i], "--wait"))
 		{
@@ -637,27 +692,42 @@ int main(int argc, char *argv[])
 			wait = atoi(argv[i]);
 			wait *= 1000;
 		}
+		else if (!strcmp(argv[i], "--config"))
+		{
+			char *path = argv[i+1];
+			if(!path){
+
+			}
+
+			if(ini_parse(path, ini_parse_handle ,&gConfig) < 0){
+				printf("Can't load config file: %s\n", path);
+				exit(0);
+			}
+
+		}
 	}
 
 	syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "start\n");
 
-	if (do_daemon && daemon(0, 0) == -1)
+	if (gConfig.run_as_daemon && daemon(0, 0) == -1)
 	{
 		syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "into daemon failure\n");
 	}
 
 	while (1)
 	{
-		power_on(power_pin);
+		int buad = i2b(atoi(gConfig.buad));
 
-		if (wait_module_ready(ins, device, buad, apn, wait) == 0)
+		power_on(gConfig.power_pin);
+
+		if (wait_module_ready(gConfig.ins, gConfig.device, buad, gConfig.apn, wait) == 0)
 			goto again;
 
-		start_ppp(device, buad_str, ins, apn, user, passwd, usepeerdns, power_pin);
+		start_ppp(gConfig.device, gConfig.buad, gConfig.ins, gConfig.apn, gConfig.user, gConfig.passwd, usepeerdns, gConfig.power_pin);
 
 	again:
 		syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"Restart...\n");
-		power_off(power_pin);
+		power_off(gConfig.power_pin);
 
 		sleep(2);
 	}
