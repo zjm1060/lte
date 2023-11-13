@@ -700,8 +700,8 @@ int main(int argc, char *argv[])
 			}
 
 			if(ini_parse(path, ini_parse_handle ,&gConfig) < 0){
-				printf("Can't load config file: %s\n", path);
-				exit(0);
+				syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"Can't load config file: %s\n", path);
+//				exit(0);
 			}
 
 		}
