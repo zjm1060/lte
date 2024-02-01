@@ -22,10 +22,27 @@
 
 #include "ini.h"
 
+void trafficData(int ins);
+
+struct Config{
+	int run_as_daemon;
+	int power_pin;
+	const char *device;
+	const char *buad;
+	const char *apn;
+	const char *user;
+	const char *passwd;
+	int ins;
+	uint wait;
+	int debug;
+}gConfig;
+
+
 static int ipv6 = 0;
 static int use_gpiod = 0;
 static char gpio_chip[32];
 static uint32_t gpio_line;
+static int termination;
 
 static void usage(char *self)
 {
@@ -170,12 +187,12 @@ int device_read(int fd, void *b, size_t len, int timeout_ms)
 
 int atCommand(int fd, const char *cmd, char *response, int size, int wait)
 {
-//	fprintf(stderr, "send:%s\n", cmd);
+	gConfig.debug?syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"send:%s\n", cmd):0;
 	memset(response, 0, size);
 	write(fd, cmd, strlen(cmd));
 	if (device_read(fd, response, size, wait))
 	{
-//		fprintf(stderr, "recv:%s\n", response);
+		gConfig.debug?syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"recv:%s\n", response):0;
 		if (strstr(response, "OK") ||
 			strstr(response, "CONNECT") ||
 			strstr(response, "RING") ||
@@ -200,6 +217,8 @@ int wait_module_ready(int ins, const char *device, int buad, const char *apn, in
 		wait -= 2000;        \
 		if (wait <= 0)      \
 			goto out;       \
+		if(termination)		\
+			exit(0);		\
 	}
 	int fd = 0;
 	int res = 0;
@@ -423,10 +442,9 @@ int getStatus(const char *name)
 			0
 
 
-static int termination;
-
 void TerminationHandle(int sig)
 {
+	power_off(gConfig.power_pin);
 	termination = 1;
 }
 
@@ -470,10 +488,6 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 	setenv("PPP_APN",apn,1);
 
 	termination = 0;
-
-	signal(SIGINT,  TerminationHandle);
-	signal(SIGKILL, TerminationHandle);
-	signal(SIGTERM, TerminationHandle);
 
 	signal(SIGCHLD,signal_hander);
 	child_runing = 1;
@@ -521,6 +535,8 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 					if(state == 0){
 						syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "ppp%d is down\n", uint);
 						kill(pid, SIGTERM);
+					}else{
+						trafficData(uint);
 					}
 				}
 			}
@@ -553,16 +569,7 @@ void start_ppp(const char *device, const char *buad, int uint, const char *apn, 
 	}\
 	s;})
 
-struct Config{
-	int run_as_daemon;
-	int power_pin;
-	const char *device;
-	const char *buad;
-	const char *apn;
-	const char *user;
-	const char *passwd;
-	int ins;
-}gConfig;
+
 
 #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
 static int ini_parse_handle(void* user, const char* section, const char* name,
@@ -572,6 +579,10 @@ static int ini_parse_handle(void* user, const char* section, const char* name,
 
 	if (MATCH("device", "name")) {
 		config->device = strdup(value);
+	}else if (MATCH("device", "debug")) {
+		gConfig.debug = atoi(strdup(value));
+	}else if (MATCH("device", "timeout")) {
+		gConfig.wait = atoi(strdup(value))*1000;
 	}else if (MATCH("device", "buad")) {
 		config->buad = strdup(value);
 	}else if (MATCH("device", "power")) {
@@ -605,7 +616,7 @@ int main(int argc, char *argv[])
 //	const char *user = "";
 //	const char *passwd = "";
 //	int buad = B115200;
-	int wait = 120*1000;
+//	int wait = 120*1000;
 	int usepeerdns = 1;
 //	char *buad_str = "115200";
 //	int ins = 0;
@@ -620,6 +631,8 @@ int main(int argc, char *argv[])
 	gConfig.power_pin = 0;
 	gConfig.ins = 0;
 	gConfig.run_as_daemon = 1;
+	gConfig.wait = 120*1000;
+	gConfig.debug = 0;
 
 	int lte_fd = 0;
 
@@ -689,8 +702,8 @@ int main(int argc, char *argv[])
 		else if (!strcmp(argv[i], "--wait"))
 		{
 			i ++;
-			wait = atoi(argv[i]);
-			wait *= 1000;
+			gConfig.wait = atoi(argv[i]);
+			gConfig.wait *= 1000;
 		}
 		else if (!strcmp(argv[i], "--config"))
 		{
@@ -707,6 +720,12 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	termination = 0;
+
+	signal(SIGINT,  TerminationHandle);
+	signal(SIGKILL, TerminationHandle);
+	signal(SIGTERM, TerminationHandle);
+
 	syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO), "start\n");
 
 	if (gConfig.run_as_daemon && daemon(0, 0) == -1)
@@ -720,13 +739,13 @@ int main(int argc, char *argv[])
 
 		power_on(gConfig.power_pin);
 
-		if (wait_module_ready(gConfig.ins, gConfig.device, buad, gConfig.apn, wait) == 0)
+		if (wait_module_ready(gConfig.ins, gConfig.device, buad, gConfig.apn, gConfig.wait) == 0)
 			goto again;
 
 		start_ppp(gConfig.device, gConfig.buad, gConfig.ins, gConfig.apn, gConfig.user, gConfig.passwd, usepeerdns, gConfig.power_pin);
 
 	again:
-		syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"Restart...\n");
+//		syslog(LOG_MAKEPRI(LOG_USER, LOG_INFO),"Restart...\n");
 		power_off(gConfig.power_pin);
 
 		sleep(2);
